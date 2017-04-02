@@ -106,7 +106,7 @@ ssize_t misc_write(struct file *f, const char __user *buf, size_t count,
 		if (copy_from_user(wr_ptr, buf, count))
 			goto memory_fail;
 
-		rd_ptr += count;
+		wr_ptr += count;
 	} else {
 		written = min(count, (size_t)(pipe_end - wr_ptr));
 
