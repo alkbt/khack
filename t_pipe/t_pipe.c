@@ -78,6 +78,7 @@ ssize_t misc_read(struct file *f, char __user *buf, size_t count, loff_t *f_pos)
 	return retval;
 
 memory_fail:
+	update_pipe();
 	mutex_unlock(&pipe_mutex);
 	return -EFAULT;
 }
@@ -132,6 +133,7 @@ ssize_t misc_write(struct file *f, const char __user *buf, size_t count,
 	return count;
 
 memory_fail:
+	update_pipe();
 	mutex_unlock(&pipe_mutex);
 	return -EFAULT;
 }
