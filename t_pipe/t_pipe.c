@@ -18,7 +18,8 @@ char * const pipe_end = &pipe_buffer[PIPE_SIZE];
 char *rd_ptr = pipe_buffer;
 char *wr_ptr = pipe_buffer;
 
-size_t free_space = PIPE_SIZE;
+size_t free_space = PIPE_SIZE - 1;
+#define data_len (PIPE_SIZE - free_space - 1)
 
 DEFINE_MUTEX(pipe_mutex);
 DECLARE_WAIT_QUEUE_HEAD(writers);
@@ -27,48 +28,44 @@ DECLARE_WAIT_QUEUE_HEAD(readers);
 void update_pipe(void)
 {
 	if (rd_ptr == wr_ptr)
-		free_space = PIPE_SIZE;
+		free_space = PIPE_SIZE - 1;
 	else
-		free_space = (rd_ptr + PIPE_SIZE - wr_ptr) % PIPE_SIZE;
+		free_space = (rd_ptr + PIPE_SIZE - wr_ptr) % PIPE_SIZE - 1;
 }
 
 ssize_t misc_read(struct file *f, char __user *buf, size_t count, loff_t *f_pos)
 {
-	size_t retval, read;
+	ssize_t retval = 0;
+	size_t read_len;
 
 	mutex_lock(&pipe_mutex);
 
-	while (free_space == PIPE_SIZE) {
+	while (data_len == 0) {
 		mutex_unlock(&pipe_mutex);
 
-		if (wait_event_interruptible(readers, free_space != PIPE_SIZE))
-			return -ERESTART;
+		if (wait_event_interruptible(readers, (data_len != 0)))
+			return -ERESTARTSYS;
 
 		mutex_lock(&pipe_mutex);
 	}
 
-	retval = min(count, PIPE_SIZE - free_space);
+	count = min(count, data_len);
+	while (count) {
+		if (rd_ptr < wr_ptr)
+			read_len = count;
+		else
+			read_len = min(count, (size_t)(pipe_end - rd_ptr));
 
-	if (rd_ptr < wr_ptr) {
-		if (copy_to_user(buf, rd_ptr, retval))
-			goto memory_fail;
+		if (copy_to_user(buf + retval, rd_ptr, read_len)) {
+			retval = -EFAULT;
+			break;
+		}
 
-		rd_ptr += retval;
-	} else {
-		read = min(retval, (size_t)(pipe_end - rd_ptr));
-		if (copy_to_user(buf, rd_ptr, read))
-			goto memory_fail;
-
-		rd_ptr += read;
+		count -= read_len;
+		retval += read_len;
+		rd_ptr += read_len;
 		if (rd_ptr == pipe_end)
 			rd_ptr = pipe_begin;
-
-		if (read != retval) {
-			if (copy_to_user(buf + read, rd_ptr, retval - read))
-				goto memory_fail;
-
-			rd_ptr += retval - read;
-		}
 	}
 
 	update_pipe();
@@ -76,19 +73,15 @@ ssize_t misc_read(struct file *f, char __user *buf, size_t count, loff_t *f_pos)
 	wake_up_interruptible(&writers);
 
 	return retval;
-
-memory_fail:
-	update_pipe();
-	mutex_unlock(&pipe_mutex);
-	return -EFAULT;
 }
 
 ssize_t misc_write(struct file *f, const char __user *buf, size_t count,
 		loff_t *f_pos)
 {
-	size_t written, left;
+	ssize_t retval = 0;
+	size_t write_len;
 
-	if (count > PIPE_SIZE)
+	if (count > (PIPE_SIZE - 1))
 		return -EINVAL;
 
 	mutex_lock(&pipe_mutex);
@@ -97,45 +90,34 @@ ssize_t misc_write(struct file *f, const char __user *buf, size_t count,
 		mutex_unlock(&pipe_mutex);
 
 		if (wait_event_interruptible(writers, free_space >= count))
-			return -ERESTART;
+			return -ERESTARTSYS;
 
 		mutex_lock(&pipe_mutex);
 	}
 
-	if (wr_ptr < rd_ptr) {
-		if (copy_from_user(wr_ptr, buf, count))
-			goto memory_fail;
+	while (count) {
+		if (wr_ptr < rd_ptr)
+			write_len = count;
+		else
+			write_len = min(count, (size_t)(pipe_end - wr_ptr));
 
-		wr_ptr += count;
-	} else {
-		written = min(count, (size_t)(pipe_end - wr_ptr));
+		if (copy_from_user(wr_ptr, buf + retval, write_len)) {
+			retval = -EFAULT;
+			break;
+		}
 
-		if (copy_from_user(wr_ptr, buf, written))
-			goto memory_fail;
-
-		wr_ptr += written;
+		retval += write_len;
+		count -= write_len;
+		wr_ptr += write_len;
 		if (wr_ptr == pipe_end)
 			wr_ptr = pipe_begin;
-
-		left = count - written;
-		if (left) {
-			if (copy_from_user(wr_ptr, buf + written, left))
-				goto memory_fail;
-
-			wr_ptr += left;
-		}
 	}
 
 	update_pipe();
 	mutex_unlock(&pipe_mutex);
 	wake_up_interruptible(&readers);
 
-	return count;
-
-memory_fail:
-	update_pipe();
-	mutex_unlock(&pipe_mutex);
-	return -EFAULT;
+	return retval;
 }
 
 const struct file_operations misc_fops = {

@@ -1,2 +1,0 @@
-BUGS
-	- moving read/write pointers and update_pipe() in memory_fail branches of misc_read/write(...) may lock down writers/readers. Add wake_up and refactor. 
